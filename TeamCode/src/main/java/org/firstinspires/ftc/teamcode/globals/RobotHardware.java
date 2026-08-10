@@ -17,7 +17,9 @@ public final class RobotHardware {
     public MotorEx frontRight;
 
 
-    private RobotHardware(OpMode opMode) {
+    public RobotHardware(OpMode opMode) {
+
+
         this.opMode = opMode;
         HardwareMap hardwareMap = opMode.hardwareMap;
 
@@ -32,5 +34,17 @@ public final class RobotHardware {
         backLeft.setInverted(false);
         frontRight.setInverted(true);
         backRight.setInverted(true);
+    }
+
+    public static RobotHardware getInstance(OpMode opMode) {
+        if (opMode == null) {
+            return null;
+        }
+
+        if (instance == null || instance.opMode != opMode) {
+            instance = new RobotHardware(opMode);
+        }
+
+        return instance;
     }
 }
