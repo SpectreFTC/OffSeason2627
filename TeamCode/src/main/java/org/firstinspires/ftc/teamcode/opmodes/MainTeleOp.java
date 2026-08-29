@@ -1,7 +1,6 @@
 package org.firstinspires.ftc.teamcode.opmodes;
 
-import com.qualcomm.robotcore.eventloop.opmode.OpMode;
-import com.seattlesolvers.solverslib.command.Command;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.seattlesolvers.solverslib.command.CommandOpMode;
 import com.seattlesolvers.solverslib.command.CommandScheduler;
 import com.seattlesolvers.solverslib.command.InstantCommand;
@@ -16,7 +15,8 @@ import org.firstinspires.ftc.teamcode.commandbase.subsystems.DriveSubsystem;
 import org.firstinspires.ftc.teamcode.commandbase.subsystems.IntakeSubsystem;
 import org.firstinspires.ftc.teamcode.globals.RobotHardware;
 
-public class TeleOp extends OpMode {
+@TeleOp(name = "TeleOp", group = "TeleOp")
+public class MainTeleOp extends CommandOpMode {
 
     CommandScheduler commandScheduler = CommandScheduler.getInstance();
 
@@ -30,7 +30,7 @@ public class TeleOp extends OpMode {
     }
 
     @Override
-    public void init() {
+    public void initialize() {
         commandScheduler.reset();
 
         StateMachine.resetInstance();
@@ -42,6 +42,15 @@ public class TeleOp extends OpMode {
         intakeSubsystem = new IntakeSubsystem(robot.intakeMotor);
 
         driverGamepad = new GamepadEx(gamepad1);
+
+        driveSubsystem.setDefaultCommand(
+                new DefaultDriveCommand(
+                        driveSubsystem,
+                        () -> driverGamepad.getLeftX(),
+                        () -> driverGamepad.getLeftY(),
+                        () -> driverGamepad.getRightX()
+                )
+        );
 
         StateMachine sm = StateMachine.builder()
                 .state(State.INTAKE, new IntakeCommand(intakeSubsystem))
@@ -56,11 +65,11 @@ public class TeleOp extends OpMode {
     }
 
     @Override
-    public void loop() {
+    public void run() {
 
-        commandScheduler.run();
+        driverGamepad.readButtons();
 
-        driveSubsystem.driveRobotCentric(driverGamepad.getLeftX(), driverGamepad.getLeftY(), driverGamepad.getRightX());
+        super.run();
 
     }
 }
