@@ -1,17 +1,18 @@
 package org.firstinspires.ftc.teamcode;
 
-import com.seattlesolvers.solverslib.command.Command;
-import org.firstinspires.ftc.robotcore.external.Telemetry;
 import junitparams.JUnitParamsRunner;
 import junitparams.Parameters;
+
+import org.firstinspires.ftc.teamcode.lib.fsm.State;
+import org.firstinspires.ftc.teamcode.lib.fsm.StateMachine;
+import org.firstinspires.ftc.teamcode.lib.fsm.transition.Transition;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
@@ -22,47 +23,52 @@ import static org.mockito.Mockito.*;
  * testImplementation 'pl.pragmatists:JUnitParams:1.1.1'
  * testImplementation 'org.mockito:mockito-core:5.7.0'
  *
- * No Android Gradle Plugin version bump needed — these run as ordinary
- * local JVM unit tests via ./gradlew :TeamCode:testDebugUnitTest.
+ * These tests exercise {@link StateMachine} against the {@link State}/{@link Transition}
+ * interfaces directly, via a small local {@link #transition} helper — not against
+ * {@code TransitionBase} — so they stay valid regardless of how that class is implemented.
  */
 @RunWith(JUnitParamsRunner.class)
 public class StateMachineTest {
 
-    private enum TestState { A, B, C, D }
+    private enum TestState implements State { A, B, C, D }
 
     @Before
     public void resetSingleton() {
         StateMachine.resetInstance();
     }
 
-    private Command mockCommand() {
-        Command cmd = mock(Command.class);
-        when(cmd.isFinished()).thenReturn(false);
-        return cmd;
+    private static Transition transition(State from, State to, BooleanSupplier condition, Runnable action) {
+        return new Transition() {
+            @Override public State from() { return from; }
+            @Override public State to() { return to; }
+            @Override public boolean condition() { return condition.getAsBoolean(); }
+            @Override public Runnable action() { return action; }
+        };
+    }
+
+    private static Transition transition(State from, State to, BooleanSupplier condition) {
+        return transition(from, to, condition, null);
+    }
+
+    private static Transition anyStateTransition(State to, BooleanSupplier condition, Runnable action) {
+        return transition(null, to, condition, action);
+    }
+
+    private static Transition anyStateTransition(State to, BooleanSupplier condition) {
+        return anyStateTransition(to, condition, null);
     }
 
     // ---------- build() validation ----------
 
     @Test
-    @Parameters({
-            "false, false",
-            "true, false"
-    })
-    public void build_throwsForInvalidConfiguration(boolean setInitial, boolean registerInitial) {
-        StateMachine.Builder builder = StateMachine.builder()
-                .state(TestState.A, mockCommand());
-
-        if (setInitial && !registerInitial) {
-            builder.initial(TestState.B); // never passed to .state()
-        }
-
+    public void build_throwsWhenInitialNeverSet() {
+        StateMachine.Builder builder = StateMachine.builder();
         assertThrows(IllegalStateException.class, builder::build);
     }
 
     @Test
-    public void build_succeedsWithValidConfiguration() {
+    public void build_succeedsWithInitialSet() {
         StateMachine sm = StateMachine.builder()
-                .state(TestState.A, mockCommand())
                 .initial(TestState.A)
                 .build();
 
@@ -73,37 +79,21 @@ public class StateMachineTest {
 
     @Test
     @Parameters({"A", "B", "C", "D"})
-    public void initialize_setsCurrentStateToInitialAndInitializesItsCommand(String initialName) {
+    public void initialize_setsCurrentStateAndFiresInitialStateChange(String initialName) {
         TestState initial = TestState.valueOf(initialName);
-        Command cmd = mockCommand();
+        List<Object[]> events = new ArrayList<>();
+
         StateMachine sm = StateMachine.builder()
-                .state(initial, cmd)
                 .initial(initial)
+                .onStateChange((from, to) -> events.add(new Object[]{from, to}))
                 .build();
 
         sm.initialize();
 
         assertEquals(initial, sm.getCurrentState());
-        verify(cmd, times(1)).initialize();
-    }
-
-    // ---------- isFinished() contract ----------
-
-    @Test
-    @Parameters({"true", "false"})
-    public void isFinished_alwaysFalseRegardlessOfActiveCommand(boolean underlyingFinished) {
-        Command cmd = mockCommand();
-        when(cmd.isFinished()).thenReturn(underlyingFinished);
-
-        StateMachine sm = StateMachine.builder()
-                .state(TestState.A, cmd)
-                .initial(TestState.A)
-                .build();
-
-        sm.initialize();
-        sm.execute();
-
-        assertFalse(sm.isFinished());
+        assertEquals(1, events.size());
+        assertNull(events.get(0)[0]);
+        assertEquals(initial, events.get(0)[1]);
     }
 
     // ---------- basic transition firing ----------
@@ -111,46 +101,75 @@ public class StateMachineTest {
     @Test
     @Parameters({"true", "false"})
     public void execute_transitionsOnlyWhenConditionTrue(boolean conditionMet) {
-        Command a = mockCommand();
-        Command b = mockCommand();
-
         StateMachine sm = StateMachine.builder()
-                .state(TestState.A, a)
-                .state(TestState.B, b)
                 .initial(TestState.A)
-                .transition(TestState.A, TestState.B, () -> conditionMet)
+                .transition(transition(TestState.A, TestState.B, () -> conditionMet))
                 .build();
 
         sm.initialize();
         sm.execute();
 
-        if (conditionMet) {
-            assertEquals(TestState.B, sm.getCurrentState());
-            verify(a, times(1)).end(false);
-            verify(b, times(1)).initialize();
-        } else {
-            assertEquals(TestState.A, sm.getCurrentState());
-            verify(a, never()).end(anyBoolean());
-            verify(b, never()).initialize();
-        }
+        assertEquals(conditionMet ? TestState.B : TestState.A, sm.getCurrentState());
     }
 
-    // ---------- transition ordering ----------
+    @Test
+    public void execute_runsTransitionActionSynchronouslyWhenItFires() {
+        Runnable action = mock(Runnable.class);
+
+        StateMachine sm = StateMachine.builder()
+                .initial(TestState.A)
+                .transition(transition(TestState.A, TestState.B, () -> true, action))
+                .build();
+
+        sm.initialize();
+        sm.execute();
+
+        assertEquals(TestState.B, sm.getCurrentState());
+        verify(action, times(1)).run();
+    }
+
+    @Test
+    public void execute_worksWithNoActionAttached() {
+        StateMachine sm = StateMachine.builder()
+                .initial(TestState.A)
+                .transition(transition(TestState.A, TestState.B, () -> true))
+                .build();
+
+        sm.initialize();
+        sm.execute(); // must not throw with a null action
+
+        assertEquals(TestState.B, sm.getCurrentState());
+    }
+
+    // ---------- only one transition fires per execute() ----------
+
+    @Test
+    public void execute_firesAtMostOneTransitionPerCall() {
+        StateMachine sm = StateMachine.builder()
+                .initial(TestState.A)
+                .transition(transition(TestState.A, TestState.B, () -> true))
+                .transition(transition(TestState.B, TestState.C, () -> true))
+                .build();
+
+        sm.initialize();
+        sm.execute();
+        assertEquals(TestState.B, sm.getCurrentState());
+
+        sm.execute();
+        assertEquals(TestState.C, sm.getCurrentState());
+    }
+
+    // ---------- transition selection ordering ----------
 
     @Test
     @Parameters(method = "transitionOrderCases")
-    public void execute_firstMatchingLocalTransitionWinsOnTie(List<TestState> registrationOrder, TestState expected) {
-        StateMachine.Builder builder = StateMachine.builder()
-                .state(TestState.A, mockCommand())
-                .state(TestState.B, mockCommand())
-                .state(TestState.C, mockCommand())
-                .initial(TestState.A);
+    public void execute_firstRegisteredMatchingTransitionWinsOnTie(TestState first, TestState second, TestState expected) {
+        StateMachine sm = StateMachine.builder()
+                .initial(TestState.A)
+                .transition(transition(TestState.A, first, () -> true))
+                .transition(transition(TestState.A, second, () -> true))
+                .build();
 
-        for (TestState candidate : registrationOrder) {
-            builder.transition(TestState.A, candidate, () -> true);
-        }
-
-        StateMachine sm = builder.build();
         sm.initialize();
         sm.execute();
 
@@ -159,8 +178,8 @@ public class StateMachineTest {
 
     private Object[] transitionOrderCases() {
         return new Object[]{
-                new Object[]{Arrays.asList(TestState.B, TestState.C), TestState.B},
-                new Object[]{Arrays.asList(TestState.C, TestState.B), TestState.C}
+                new Object[]{TestState.B, TestState.C, TestState.B},
+                new Object[]{TestState.C, TestState.B, TestState.C}
         };
     }
 
@@ -168,12 +187,9 @@ public class StateMachineTest {
     @Parameters({"true", "false"})
     public void execute_globalTransitionTakesPriorityOverLocal(boolean globalConditionMet) {
         StateMachine sm = StateMachine.builder()
-                .state(TestState.A, mockCommand())
-                .state(TestState.B, mockCommand())
-                .state(TestState.C, mockCommand())
                 .initial(TestState.A)
-                .transition(TestState.A, TestState.B, () -> true)
-                .anyTransition(TestState.C, () -> globalConditionMet)
+                .transition(transition(TestState.A, TestState.B, () -> true))
+                .transition(anyStateTransition(TestState.C, () -> globalConditionMet))
                 .build();
 
         sm.initialize();
@@ -182,124 +198,39 @@ public class StateMachineTest {
         assertEquals(globalConditionMet ? TestState.C : TestState.B, sm.getCurrentState());
     }
 
-    // ---------- enter/exit hooks ----------
-
     @Test
-    @Parameters({"B", "C"})
-    public void execute_enterAndExitHooksFireOnTransition(String targetName) {
-        TestState target = TestState.valueOf(targetName);
-        AtomicBoolean exitedA = new AtomicBoolean(false);
-        AtomicBoolean enteredTarget = new AtomicBoolean(false);
+    public void anyStateTransition_hasNullFromAndReportsGlobal() {
+        Transition t = anyStateTransition(TestState.A, () -> true);
 
-        StateMachine sm = StateMachine.builder()
-                .state(TestState.A, mockCommand())
-                .state(TestState.B, mockCommand())
-                .state(TestState.C, mockCommand())
-                .initial(TestState.A)
-                .transition(TestState.A, target, () -> true)
-                .onExit(TestState.A, () -> exitedA.set(true))
-                .onEnter(target, () -> enteredTarget.set(true))
-                .build();
-
-        sm.initialize();
-        sm.execute();
-
-        assertTrue(exitedA.get());
-        assertTrue(enteredTarget.get());
+        assertNull(t.from());
+        assertTrue(t.isGlobal());
     }
 
     @Test
-    public void initialize_doesNotFireOnExitHookForInitialState() {
-        AtomicBoolean exitFired = new AtomicBoolean(false);
+    public void ordinaryTransition_isNotGlobal() {
+        Transition t = transition(TestState.A, TestState.B, () -> true);
 
-        StateMachine sm = StateMachine.builder()
-                .state(TestState.A, mockCommand())
-                .initial(TestState.A)
-                .onExit(TestState.A, () -> exitFired.set(true))
-                .build();
-
-        sm.initialize();
-
-        assertFalse(exitFired.get());
+        assertFalse(t.isGlobal());
     }
 
     // ---------- onStateChange listener ----------
 
     @Test
-    @Parameters(method = "stateChangePairs")
-    public void execute_stateChangeListenerReceivesFromAndToInOrder(TestState from, TestState to) {
+    public void execute_stateChangeListenerReceivesPreviousAndNewState() {
         List<Object[]> events = new ArrayList<>();
 
         StateMachine sm = StateMachine.builder()
-                .state(from, mockCommand())
-                .state(to, mockCommand())
-                .initial(from)
-                .transition(from, to, () -> true)
-                .onStateChange((f, t) -> events.add(new Object[]{f, t}))
+                .initial(TestState.A)
+                .transition(transition(TestState.A, TestState.B, () -> true))
+                .onStateChange((from, to) -> events.add(new Object[]{from, to}))
                 .build();
 
-        sm.initialize();
-        sm.execute();
+        sm.initialize(); // fires (null, A)
+        sm.execute();     // fires (A, B)
 
         assertEquals(2, events.size());
-        assertNull(events.get(0)[0]);
-        assertEquals(from, events.get(0)[1]);
-        assertEquals(from, events.get(1)[0]);
-        assertEquals(to, events.get(1)[1]);
-    }
-
-    private Object[] stateChangePairs() {
-        return new Object[]{
-                new Object[]{TestState.A, TestState.B},
-                new Object[]{TestState.C, TestState.D}
-        };
-    }
-
-    // ---------- telemetry ----------
-
-    @Test
-    @Parameters({"A", "B", "C", "D"})
-    public void execute_reportsCurrentStateToTelemetryWithoutCallingUpdate(String stateName) {
-        TestState state = TestState.valueOf(stateName);
-        Telemetry telemetry = mock(Telemetry.class);
-
-        StateMachine sm = StateMachine.builder()
-                .state(state, mockCommand())
-                .initial(state)
-                .telemetry(telemetry)
-                .build();
-
-        sm.initialize();
-        sm.execute();
-
-        verify(telemetry, atLeastOnce()).addData("StateMachine/currentState", state);
-        verify(telemetry, never()).update();
-    }
-
-    @Test
-    public void execute_neverTouchesTelemetryWhenNoneConfigured() {
-        StateMachine sm = StateMachine.builder()
-                .state(TestState.A, mockCommand())
-                .initial(TestState.A)
-                .build();
-
-        sm.initialize();
-        sm.execute(); // must not throw with no telemetry configured
-    }
-
-    // ---------- error handling ----------
-
-    @Test
-    public void execute_throwsWhenTransitioningToUnregisteredState() {
-        StateMachine sm = StateMachine.builder()
-                .state(TestState.A, mockCommand())
-                .initial(TestState.A)
-                .transition(TestState.A, TestState.B, () -> true) // B never registered
-                .build();
-
-        sm.initialize();
-
-        assertThrows(IllegalStateException.class, sm::execute);
+        assertEquals(TestState.A, events.get(1)[0]);
+        assertEquals(TestState.B, events.get(1)[1]);
     }
 
     // ---------- singleton behavior ----------
@@ -321,50 +252,9 @@ public class StateMachineTest {
         StateMachine.resetInstance();
         StateMachine viaGetInstance = StateMachine.getInstance();
         StateMachine viaBuilder = StateMachine.builder()
-                .state(TestState.A, mockCommand())
                 .initial(TestState.A)
                 .build();
 
         assertSame(viaGetInstance, viaBuilder);
-    }
-
-    // ---------- end() propagation ----------
-
-    @Test
-    @Parameters({"true", "false"})
-    public void end_propagatesInterruptedFlagAndFiresExitHook(boolean interrupted) {
-        Command cmd = mockCommand();
-        AtomicBoolean exitFired = new AtomicBoolean(false);
-
-        StateMachine sm = StateMachine.builder()
-                .state(TestState.A, cmd)
-                .initial(TestState.A)
-                .onExit(TestState.A, () -> exitFired.set(true))
-                .build();
-
-        sm.initialize();
-        sm.end(interrupted);
-
-        verify(cmd, times(1)).end(interrupted);
-        assertTrue(exitFired.get());
-    }
-
-    // ---------- finished command without matching transition ----------
-
-    @Test
-    public void execute_finishedCommandDoesNotAutoAdvanceWithoutMatchingTransition() {
-        Command cmd = mockCommand();
-        when(cmd.isFinished()).thenReturn(true);
-
-        StateMachine sm = StateMachine.builder()
-                .state(TestState.A, cmd)
-                .initial(TestState.A)
-                .build();
-
-        sm.initialize();
-        sm.execute();
-
-        assertEquals(TestState.A, sm.getCurrentState());
-        verify(cmd, times(1)).end(false);
     }
 }
