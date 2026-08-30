@@ -18,6 +18,10 @@ public class DebouncedTransition extends TransitionBase {
     @Override
     public boolean condition() {
         consecutiveTrue = rawCondition.getAsBoolean() ? consecutiveTrue + 1 : 0;
-        return consecutiveTrue >= requiredLoops;
+        if (consecutiveTrue >= requiredLoops) {
+            consecutiveTrue = 0;
+            return true;
+        }
+        return false;
     }
 }

@@ -5,6 +5,7 @@ import junitparams.Parameters;
 
 import org.firstinspires.ftc.teamcode.lib.fsm.State;
 import org.firstinspires.ftc.teamcode.lib.fsm.StateMachine;
+import org.firstinspires.ftc.teamcode.lib.fsm.transition.DebouncedTransition;
 import org.firstinspires.ftc.teamcode.lib.fsm.transition.Transition;
 import org.junit.Before;
 import org.junit.Test;
@@ -231,6 +232,42 @@ public class StateMachineTest {
         assertEquals(2, events.size());
         assertEquals(TestState.A, events.get(1)[0]);
         assertEquals(TestState.B, events.get(1)[1]);
+    }
+
+    // ---------- DebouncedTransition ----------
+
+    @Test
+    public void debouncedTransition_resetsCounterAfterFiring_doesNotFireImmediatelyOnReentry() {
+        // requires 2 consecutive trues; B→A is a plain always-true transition
+        DebouncedTransition aToB = new DebouncedTransition(TestState.A, TestState.B, () -> true, 2, null);
+
+        StateMachine sm = StateMachine.builder()
+                .initial(TestState.A)
+                .transition(aToB)
+                .transition(transition(TestState.B, TestState.A, () -> true))
+                .build();
+
+        sm.initialize();
+
+        // tick 1: counter=1, threshold not reached → stays A
+        sm.execute();
+        assertEquals(TestState.A, sm.getCurrentState());
+
+        // tick 2: counter=2 → fires A→B, counter resets to 0
+        sm.execute();
+        assertEquals(TestState.B, sm.getCurrentState());
+
+        // tick 3: B→A plain transition fires
+        sm.execute();
+        assertEquals(TestState.A, sm.getCurrentState());
+
+        // tick 4: counter was reset → counter=1, threshold not reached → stays A
+        sm.execute();
+        assertEquals(TestState.A, sm.getCurrentState());
+
+        // tick 5: counter=2 → fires A→B again
+        sm.execute();
+        assertEquals(TestState.B, sm.getCurrentState());
     }
 
     // ---------- singleton behavior ----------
